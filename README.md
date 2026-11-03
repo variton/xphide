@@ -1,101 +1,115 @@
 # xphide
 
-Python utilities for bcrypt password hashing, Fernet encryption and decryption, JWT signing and verification, and environment variable loading.
+A lightweight Python utility package for password hashing, symmetric encryption, JWT signing and verification, and environment variable access. It provides a small interface built on `bcrypt`, `cryptography`, and `python-jose`.
 
-## Requirements and installation
+## Features
 
-Requires Python 3.14 or newer. From the repository root:
+| Component | Purpose |
+| --- | --- |
+| `Crypt` | Hash passwords with bcrypt and verify password candidates. |
+| `Xcrypt` | Encrypt and decrypt text with Fernet authenticated encryption. |
+| `JwtCrypt` | Sign and verify JSON Web Tokens using HS256. |
+| `load` | Read values from the process environment. |
+
+## Installation
+
+**Requires Python 3.14 or later.** Run the following command from the repository root:
 
 ```sh
 python -m pip install -e .
 ```
 
-For development and tests, install the development dependency group with uv:
+For development, install the development dependency group with uv:
 
 ```sh
 uv sync --group dev
 ```
 
-## Configuration
-
-The client code or calling environment must define a nonempty `SJWTK` environment variable before running the tests. This variable supplies the JWT signing key and must be set before importing `xphide.jwtcrypt`, because the default key is read at import time.
-
-```sh
-export SJWTK='local-test-signing-key'
-```
-
-Use a private signing key for application deployments and keep it out of version control.
-
 ## Usage
 
 ### Password hashing
+
+Use `Crypt.hash` to create a salted bcrypt hash and `Crypt.is_equal` to verify a password against it. Pass the stored hash as the first argument when verifying:
 
 ```python
 from xphide.crypt import Crypt
 
 password_hash = Crypt.hash("example-password")
+
 assert Crypt.is_equal(password_hash, "example-password")
+assert not Crypt.is_equal(password_hash, "incorrect-password")
 ```
 
-Password strings must be ASCII, matching the encoding used by `Crypt`.
+Both methods accept strings. Passwords must contain only ASCII characters, matching the encoding used by `Crypt`.
 
-### Encryption and decryption
+### Text encryption
+
+Create an `Xcrypt` instance to encrypt and decrypt text. Encryption returns a `bytes` token; decryption returns a `str`.
 
 ```python
 from xphide.xcrypt import Encoding, Xcrypt
 
 crypt = Xcrypt(encoding=Encoding.UTF8)
-token = crypt.encrypt("Café")  # Returns bytes.
-assert crypt.decrypt(token) == "Café"  # Returns str.
+
+token = crypt.encrypt("Café")
+assert crypt.decrypt(token) == "Café"
 ```
 
-`Xcrypt` defaults to ASCII; select `Encoding.UTF8` for non-ASCII text. Despite
-the current type annotations, `encrypt` returns a bytes token, which can be
-passed directly to `decrypt`.
+The default encoding is ASCII. Select `Encoding.UTF8` for text containing non-ASCII characters. The runtime return type of `encrypt` is `bytes`, despite its current `str` annotation.
 
-Each default instance generates its own Fernet key. To decrypt data across
-instances or application restarts, securely retain a key and supply a Fernet
-cipher created from it:
+#### Reusing an encryption key
+
+Each default `Xcrypt` instance generates an independent Fernet key. To decrypt data across instances or application restarts, retain the key securely and provide a cipher initialized with that key:
 
 ```python
 from cryptography.fernet import Fernet
 from xphide.xcrypt import Xcrypt
 
-key = Fernet.generate_key()  # Generate once and store securely for reuse.
+# Generate once, then store securely and retrieve for subsequent use.
+key = Fernet.generate_key()
+
 writer = Xcrypt(cipher=Fernet(key))
 reader = Xcrypt(cipher=Fernet(key))
 
 assert reader.decrypt(writer.encrypt("secret")) == "secret"
 ```
 
-Decryption raises `cryptography.fernet.InvalidToken` for invalid or tampered
-tokens, or tokens encrypted with a different key.
+Invalid or tampered tokens, including tokens encrypted with a different key, raise `cryptography.fernet.InvalidToken`.
 
 ### JWT signing and verification
 
-With `SJWTK` defined before importing the module:
+`JwtCrypt` signs and verifies tokens using HS256. Set the `SJWTK` environment variable **before importing `xphide.jwtcrypt`** to configure the default signing key:
+
+```sh
+export SJWTK='replace-with-your-private-signing-key'
+```
 
 ```python
 from xphide.jwtcrypt import JwtCrypt
 
 token = JwtCrypt.encode({"sub": "user-123"})
 payload = JwtCrypt.decode(token)
+
 assert payload["sub"] == "user-123"
 ```
 
-JWTs use HS256. Both methods also accept an explicit signing key through the `_key` argument.
-An explicit nonempty key overrides the value loaded from `SJWTK`:
+The default key is read at module import time. Both methods also accept an explicit, nonempty `_key` argument that overrides the default:
 
 ```python
-token = JwtCrypt.encode({"sub": "user-123"}, _key="example-key")
-payload = JwtCrypt.decode(token, _key="example-key")
+import os
+
+from xphide.jwtcrypt import JwtCrypt
+
+signing_key = os.environ["APP_SIGNING_KEY"]
+token = JwtCrypt.encode({"sub": "user-123"}, _key=signing_key)
+payload = JwtCrypt.decode(token, _key=signing_key)
 ```
 
-JWT payloads are signed, not encrypted. Invalid tokens or signatures raise
-`jose.exceptions.JWTError`; expired tokens raise its subclass
-`jose.exceptions.ExpiredSignatureError`.
+JWT payloads are signed, not encrypted. Invalid tokens or signatures raise `jose.exceptions.JWTError`; expired tokens raise its subclass, `jose.exceptions.ExpiredSignatureError`. Keep signing keys private and out of version control.
 
 ### Environment variables
+
+Use `load` to read a named environment variable, or omit the argument to read `SJWTK`:
 
 ```python
 from xphide.envvar_loader import load
@@ -104,21 +118,19 @@ signing_key = load()  # Reads SJWTK.
 custom_value = load("MY_VARIABLE")
 ```
 
-`load` returns `None` when the requested variable is missing and preserves an
-empty string when the variable is defined but empty. It reads the process
-environment; it does not load `.env` files.
+The function returns `None` when a variable is absent and an empty string when it is defined but empty. It reads the process environment and does not load `.env` files.
 
-## Tests
+## Development
 
-After installing the development dependencies, run from the repository root:
+The source code is located in `src/xphide/`, with tests in `tests/`. After installing the development dependencies, run the test suite from the repository root:
 
 ```sh
 export SJWTK='local-test-signing-key'
 uv run pytest
 ```
 
-The JWT tests require a nonempty `SJWTK` supplied by the client or calling environment; they fail if it is missing or empty.
+The JWT tests require a nonempty `SJWTK` supplied by the calling environment before the test process starts. They fail if it is missing or empty.
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+Released under the [MIT License](LICENSE).
